@@ -1,3 +1,4 @@
+
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -174,6 +175,7 @@ COLUMNAS_NECESARIAS = [
     "MMPP Activa",
     "NS",
     "NS Corregido",
+    "Riesgo MMPP",
     "Consumo X̄",
     "Stock Actual",
     "Stock Óptimo",
@@ -271,7 +273,8 @@ COLUMNAS_NUMERICAS = [
     "Stock Máximo",
     "Cob. [Meses]",
     "Cobertura a [Días]",
-    "Sobrestock [%]"
+    "Sobrestock [%]",
+    "Riesgo MMPP"
 ]
 
 datos_activos = convertir_numerico(
@@ -338,7 +341,7 @@ col_grafico, col_resumen = st.columns(
 
 
 # -----------------------------------------------------
-# 10.1 CLASIFICACIÓN
+# 10.1 CLASIFICACIÓN Y PONDERACIÓN POR RIESGO
 # -----------------------------------------------------
 
 clasificaciones = (
@@ -349,29 +352,44 @@ clasificaciones = (
     .str.upper()
 )
 
-conteo = (
-    clasificaciones[
-        clasificaciones.isin(["BB", "EB", "SB"])
-    ]
-    .value_counts()
-    .reindex(["EB", "SB", "BB"], fill_value=0)
+# La fórmula del MRP pondera cada clasificación
+# por el valor de la columna Riesgo MMPP.
+
+riesgo_eb = datos_activos.loc[
+    clasificaciones == "EB",
+    "Riesgo MMPP"
+].sum()
+
+riesgo_sb = datos_activos.loc[
+    clasificaciones == "SB",
+    "Riesgo MMPP"
+].sum()
+
+riesgo_bb = datos_activos.loc[
+    clasificaciones == "BB",
+    "Riesgo MMPP"
+].sum()
+
+riesgo_total_clasificado = (
+    riesgo_eb + riesgo_sb + riesgo_bb
 )
 
-total_clasificados = int(conteo.sum())
-
 
 # -----------------------------------------------------
-# 10.2 NIVEL DE SERVICIO
+# 10.2 NIVEL DE SERVICIO SEGÚN FÓRMULA DEL MRP
 # -----------------------------------------------------
 
-if total_clasificados > 0:
+# Fórmula original:
+#
+# (SUMA Riesgo EB + 0,5 * SUMA Riesgo SB)
+# /
+# (SUMA Riesgo BB + SUMA Riesgo EB + SUMA Riesgo SB)
+
+if riesgo_total_clasificado > 0:
 
     nivel_servicio = (
-        (
-            conteo["EB"]
-            + conteo["SB"] * 0.5
-        )
-        / total_clasificados
+        (riesgo_eb + 0.5 * riesgo_sb)
+        / riesgo_total_clasificado
     ) * 100
 
 else:
@@ -397,24 +415,31 @@ alertas = int(
 
 
 # -----------------------------------------------------
-# 10.4 GRÁFICO DE DONA
+# 10.4 GRÁFICO DE DONA PONDERADO POR RIESGO
 # -----------------------------------------------------
 
 with col_grafico:
 
-    st.subheader("Distribución del nivel de servicio")
+    st.subheader(
+        "Distribución ponderada del nivel de servicio"
+    )
+
+    st.caption(
+        "La distribución utiliza la suma de Riesgo MMPP "
+        "por clasificación, siguiendo la ponderación del MRP."
+    )
 
     grafico_df = pd.DataFrame({
         "Clasificación": ["EB", "SB", "BB"],
-        "Cantidad": [
-            int(conteo["EB"]),
-            int(conteo["SB"]),
-            int(conteo["BB"])
+        "Riesgo ponderado": [
+            riesgo_eb,
+            riesgo_sb,
+            riesgo_bb
         ]
     })
 
     grafico_df = grafico_df[
-        grafico_df["Cantidad"] > 0
+        grafico_df["Riesgo ponderado"] > 0
     ]
 
     if not grafico_df.empty:
@@ -422,7 +447,7 @@ with col_grafico:
         fig = px.pie(
             grafico_df,
             names="Clasificación",
-            values="Cantidad",
+            values="Riesgo ponderado",
             hole=0.48,
             color="Clasificación",
             color_discrete_map={
@@ -475,8 +500,8 @@ with col_grafico:
     else:
 
         st.info(
-            "No hay clasificaciones BB, EB o SB "
-            "para construir el gráfico."
+            "No hay riesgos ponderados positivos en las "
+            "clasificaciones BB, EB o SB para construir el gráfico."
         )
 
 
@@ -501,6 +526,13 @@ with col_resumen:
             "Nivel de servicio",
             f"{nivel_servicio:.1f}%".replace(".", ",")
         )
+
+        if riesgo_total_clasificado <= 0:
+
+            st.warning(
+                "No se pudo calcular el nivel de servicio porque "
+                "la suma de Riesgo MMPP para EB, SB y BB es cero."
+            )
 
     with st.container(border=True):
 
@@ -774,4 +806,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
