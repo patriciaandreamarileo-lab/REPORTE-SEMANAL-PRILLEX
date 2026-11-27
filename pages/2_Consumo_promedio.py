@@ -985,110 +985,168 @@ st.caption(
 st.divider()
 
 
+
 # =====================================================
-# 17. PROYECCIÓN DE CONSUMO
+# 17. PROYECCIÓN DE CONSUMO CON PROMEDIO MÓVIL
 # =====================================================
 
 st.subheader("Proyección de consumo")
 
 st.markdown(
-    "La proyección se calcula utilizando el promedio de los "
-    "últimos tres meses con registros reales de consumo."
+    "La proyección se calcula mediante un promedio móvil "
+    "de los últimos tres meses. Cada nuevo mes proyectado "
+    "considera los dos meses anteriores y el último valor "
+    "proyectado, cuando corresponda."
 )
 
-if len(consumo_mensual) >= 1:
+if len(consumo_mensual) >= 3:
 
-    # Últimos tres meses disponibles con registros
+    # -------------------------------------------------
+    # 1. ORDENAR LOS CONSUMOS REALES
+    # -------------------------------------------------
 
-    ultimos_tres = (
-        consumo_mensual
-        .tail(3)
+    reales = (
+        consumo_mensual[
+            ["Mes", "Fecha", "Consumo"]
+        ]
+        .sort_values("Mes")
         .copy()
     )
 
-    promedio_proyeccion = (
-        ultimos_tres["Consumo"].mean()
-    )
+    # Último mes real disponible
+    ultimo_mes = reales["Mes"].max()
 
-    ultimo_mes = consumo_mensual["Mes"].max()
+    # Últimos tres meses reales
+    ultimos_tres = reales.tail(3)
 
-    # Punto de unión entre consumo real y proyección
+    # -------------------------------------------------
+    # 2. CALCULAR PROYECCIÓN CON PROMEDIO MÓVIL
+    # -------------------------------------------------
 
-    fecha_inicio = ultimo_mes.to_timestamp()
+    # Guardar los valores reales y proyectados.
+    # Cada nueva proyección se incorpora a esta lista.
 
-    proyeccion = pd.DataFrame({
-        "Fecha": [fecha_inicio],
-        "Consumo": [
-            consumo_mensual.iloc[-1]["Consumo"]
-        ],
-        "Tipo": ["Proyección"]
-    })
+    historial_consumo = reales["Consumo"].tolist()
+
+    proyecciones = []
 
     # Proyectar los siguientes tres meses
+    for i in range(1, 4):
 
-    fechas_futuras = [
-        (ultimo_mes + i).to_timestamp()
-        for i in range(1, 4)
-    ]
+        # Tomar los últimos tres valores disponibles
+        ultimos_valores = historial_consumo[-3:]
 
-    datos_futuros = pd.DataFrame({
-        "Fecha": fechas_futuras,
-        "Consumo": [promedio_proyeccion] * 3,
-        "Tipo": ["Proyección"] * 3
-    })
+        # Calcular promedio móvil
+        promedio_movil = sum(ultimos_valores) / 3
 
-    proyeccion = pd.concat(
-        [
-            proyeccion,
-            datos_futuros
-        ],
-        ignore_index=True
-    )
+        # Calcular mes proyectado
+        mes_proyectado = ultimo_mes + i
 
-    # Datos reales
+        fecha_proyectada = mes_proyectado.to_timestamp()
 
-    reales = consumo_mensual[
+        # Guardar resultado
+        proyecciones.append({
+            "Mes": mes_proyectado,
+            "Fecha": fecha_proyectada,
+            "Consumo": promedio_movil,
+            "Tipo": "Proyección"
+        })
+
+        # Incorporar la proyección al historial
+        # para calcular el siguiente mes
+        historial_consumo.append(promedio_movil)
+
+    datos_futuros = pd.DataFrame(proyecciones)
+
+    # -------------------------------------------------
+    # 3. PREPARAR SERIE REAL
+    # -------------------------------------------------
+
+    reales_grafico = reales[
         ["Fecha", "Consumo"]
     ].copy()
 
-    reales["Tipo"] = "Consumo real"
+    reales_grafico["Tipo"] = "Consumo real"
 
-    # Unir las series
+    # -------------------------------------------------
+    # 4. PREPARAR SERIE PROYECTADA
+    # -------------------------------------------------
 
-    datos_grafico = pd.concat(
+    # Incorporar el último punto real a la proyección.
+    # Esto permite que ambas líneas se unan exactamente
+    # sin perder sus respectivos colores.
+
+    punto_union = pd.DataFrame({
+        "Fecha": [reales.iloc[-1]["Fecha"]],
+        "Consumo": [reales.iloc[-1]["Consumo"]],
+        "Tipo": ["Proyección"]
+    })
+
+    proyeccion_grafico = pd.concat(
         [
-            reales,
-            proyeccion
+            punto_union,
+            datos_futuros[["Fecha", "Consumo", "Tipo"]]
         ],
         ignore_index=True
     )
 
-    fig_proyeccion = px.line(
-        datos_grafico,
-        x="Fecha",
-        y="Consumo",
-        color="Tipo",
-        markers=True,
-        color_discrete_map={
-            "Consumo real": "#245A91",
-            "Proyección": "#E58A26"
-        },
-        labels={
-            "Fecha": "Mes",
-            "Consumo": f"Consumo ({unidad_seleccionada})",
-            "Tipo": "Serie"
-        }
-    )
+    # -------------------------------------------------
+    # 5. CREAR GRÁFICO
+    # -------------------------------------------------
 
-    fig_proyeccion.update_traces(
-        line=dict(width=3),
-        marker=dict(size=8),
-        hovertemplate=(
-            "<b>%{x|%B %Y}</b><br>"
-            "Consumo: %{y:,.2f}"
-            "<extra></extra>"
+    import plotly.graph_objects as go
+
+    fig_proyeccion = go.Figure()
+
+    # Línea de consumo real
+    fig_proyeccion.add_trace(
+        go.Scatter(
+            x=reales_grafico["Fecha"],
+            y=reales_grafico["Consumo"],
+            mode="lines+markers",
+            name="Consumo real",
+            line=dict(
+                color="#245A91",
+                width=3
+            ),
+            marker=dict(
+                size=8,
+                color="#245A91"
+            ),
+            hovertemplate=(
+                "<b>%{x|%B %Y}</b><br>"
+                "Consumo real: %{y:,.2f}"
+                "<extra></extra>"
+            )
         )
     )
+
+    # Línea de proyección
+    fig_proyeccion.add_trace(
+        go.Scatter(
+            x=proyeccion_grafico["Fecha"],
+            y=proyeccion_grafico["Consumo"],
+            mode="lines+markers",
+            name="Proyección",
+            line=dict(
+                color="#E58A26",
+                width=3
+            ),
+            marker=dict(
+                size=8,
+                color="#E58A26"
+            ),
+            hovertemplate=(
+                "<b>%{x|%B %Y}</b><br>"
+                "Consumo proyectado: %{y:,.2f}"
+                "<extra></extra>"
+            )
+        )
+    )
+
+    # -------------------------------------------------
+    # 6. CONFIGURACIÓN VISUAL
+    # -------------------------------------------------
 
     fig_proyeccion.update_layout(
         height=450,
@@ -1109,7 +1167,8 @@ if len(consumo_mensual) >= 1:
             title=f"Consumo ({unidad_seleccionada})",
             gridcolor="#E2E8F0"
         ),
-        legend_title_text=""
+        legend_title_text="",
+        hovermode="x unified"
     )
 
     st.plotly_chart(
@@ -1117,24 +1176,47 @@ if len(consumo_mensual) >= 1:
         use_container_width=True
     )
 
-    st.info(
-        f"Consumo promedio utilizado para la proyección: "
-        f"{promedio_proyeccion:,.2f} {unidad_seleccionada}."
+    # -------------------------------------------------
+    # 7. MOSTRAR DETALLE DE LA PROYECCIÓN
+    # -------------------------------------------------
+
+    st.markdown("### Detalle del promedio móvil")
+
+    detalle_proyeccion = datos_futuros.copy()
+
+    detalle_proyeccion["Mes"] = (
+        detalle_proyeccion["Mes"]
+        .dt.strftime("%B %Y")
+    )
+
+    detalle_proyeccion["Consumo proyectado"] = (
+        detalle_proyeccion["Consumo"]
+        .round(2)
+    )
+
+    detalle_proyeccion = detalle_proyeccion[
+        ["Mes", "Consumo proyectado"]
+    ]
+
+    st.dataframe(
+        detalle_proyeccion,
+        use_container_width=True,
+        hide_index=True
     )
 
     st.caption(
-        "La proyección es una estimación constante basada en "
-        "los últimos tres meses disponibles con registros. "
-        "No representa una predicción estadística avanzada."
+        "La proyección utiliza un promedio móvil de tres meses. "
+        "A partir del segundo mes proyectado, se incorporan "
+        "los valores estimados de los meses anteriores."
     )
 
 else:
 
     st.info(
-        "No existen suficientes registros para generar "
-        "una proyección."
+        "Se necesitan al menos tres meses de consumo "
+        "registrado para generar la proyección mediante "
+        "promedio móvil."
     )
-
 
 # =====================================================
 # 18. PIE DE PÁGINA
