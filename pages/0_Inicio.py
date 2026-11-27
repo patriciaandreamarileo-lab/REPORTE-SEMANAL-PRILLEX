@@ -1,4 +1,3 @@
-
 import streamlit as st
 
 st.title("Dashboard de Gestión | PRILLEX")
@@ -68,11 +67,6 @@ with col2:
         "y sus variaciones por materia prima."
     )
 
-    st.info(
-        "**🔒 Administración**\n\n"
-        "Actualiza los archivos MRP, consumo y precios "
-        "del dashboard."
-    )
 
 st.markdown(
     """
