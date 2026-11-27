@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 
 from io import BytesIO
+from datetime import datetime, date
+from openpyxl import load_workbook
 from modules.github_storage import gh_leer
 
 
@@ -18,6 +20,7 @@ st.set_page_config(
 )
 
 RUTA_CONSUMO = "data/CONSUMO/consumo_prillex.xlsx"
+RUTA_MRP = "data/MRP/Planificacion_MRP.xlsm"
 CENTRO_PRILLEX = "E002"
 
 
@@ -50,7 +53,7 @@ div[data-testid="stMetric"] {
 
 
 # =====================================================
-# 3. CARGAR ARCHIVO DESDE GITHUB
+# 3. CARGAR ARCHIVO DE CONSUMO DESDE GITHUB
 # =====================================================
 
 @st.cache_data(ttl=300)
@@ -73,6 +76,263 @@ def cargar_consumo():
 
 
 # =====================================================
+# 3.1 CARGAR INFORMACIÓN DE STOCK Y CONSUMO DEL MRP
+# =====================================================
+
+@st.cache_data(ttl=300)
+def cargar_datos_mrp():
+
+    """
+    Lee la hoja MRP del archivo XLSM almacenado en GitHub.
+
+    Obtiene:
+    - Stock Actual: columna W.
+    - Consumo acumulado: fila Cons. Acu.
+    - Mes de actualización: fecha de la fila 6.
+    """
+
+    contenido = gh_leer(RUTA_MRP)
+
+    if contenido is None:
+        raise Exception(
+            "No se encontró el archivo MRP de PRILLEX en GitHub."
+        )
+
+    libro = load_workbook(
+        BytesIO(contenido),
+        data_only=True,
+        read_only=True
+    )
+
+    try:
+
+        if "MRP" not in libro.sheetnames:
+            raise Exception(
+                "No se encontró la hoja 'MRP' dentro del archivo XLSM."
+            )
+
+        hoja = libro["MRP"]
+
+        # -------------------------------------------------
+        # IDENTIFICAR FECHA DE ACTUALIZACIÓN
+        # -------------------------------------------------
+
+        fechas_actualizacion = [
+            valor
+            for valor in next(
+                hoja.iter_rows(
+                    min_row=6,
+                    max_row=6,
+                    values_only=True
+                )
+            )
+            if isinstance(valor, (datetime, date))
+        ]
+
+        if not fechas_actualizacion:
+            raise Exception(
+                "No se encontró la fecha de actualización del MRP en la fila 6."
+            )
+
+        fecha_actualizacion = max(fechas_actualizacion)
+
+        mes_actualizacion = (
+            fecha_actualizacion.year,
+            fecha_actualizacion.month
+        )
+
+        # -------------------------------------------------
+        # IDENTIFICAR COLUMNA DEL MES ACTUAL
+        # -------------------------------------------------
+
+        encabezados = next(
+            hoja.iter_rows(
+                min_row=8,
+                max_row=8,
+                values_only=True
+            )
+        )
+
+        columna_mes = None
+
+        for indice, valor in enumerate(encabezados, start=1):
+
+            if isinstance(valor, (datetime, date)):
+
+                if (
+                    valor.year,
+                    valor.month
+                ) == mes_actualizacion:
+
+                    columna_mes = indice
+                    break
+
+        if columna_mes is None:
+            raise Exception(
+                "No se encontró una columna mensual que coincida "
+                "con la fecha de actualización del MRP."
+            )
+
+        # -------------------------------------------------
+        # LEER MATERIAS PRIMAS
+        # -------------------------------------------------
+
+        resultados = {}
+
+        # Estructura de la hoja MRP:
+        #
+        # A  = Centro
+        # B  = Material
+        # D  = UM
+        # W  = Stock Actual
+        # AA = Tipo de fila (Cons. Proy, Cons. Acu, etc.)
+        # AB en adelante = Valores mensuales
+
+        for fila in hoja.iter_rows(
+            min_row=9,
+            max_col=max(27, columna_mes),
+            values_only=True
+        ):
+
+            centro = str(
+                fila[0] or ""
+            ).strip().upper()
+
+            if centro != CENTRO_PRILLEX:
+                continue
+
+            material = fila[1]
+
+            if material is None:
+                continue
+
+            if isinstance(material, float) and material.is_integer():
+                codigo = str(int(material))
+            else:
+                codigo = str(material).strip()
+
+            if codigo.endswith(".0"):
+                codigo = codigo[:-2]
+
+            unidad = str(
+                fila[3] or ""
+            ).strip()
+
+            stock_actual = (
+                fila[22]
+                if len(fila) > 22
+                else None
+            )
+
+            tipo_fila = str(
+                fila[26]
+                if len(fila) > 26 and fila[26] is not None
+                else ""
+            ).strip().upper()
+
+            tipo_normalizado = (
+                tipo_fila
+                .replace(".", "")
+                .replace(" ", "")
+            )
+
+            if codigo not in resultados:
+
+                resultados[codigo] = {
+                    "stock_actual": None,
+                    "consumo_acumulado": None,
+                    "unidad": unidad
+                }
+
+            # ---------------------------------------------
+            # STOCK ACTUAL
+            # ---------------------------------------------
+
+            if stock_actual is not None:
+
+                try:
+
+                    valor_stock = float(stock_actual)
+
+                    if resultados[codigo]["stock_actual"] is None:
+
+                        resultados[codigo]["stock_actual"] = valor_stock
+
+                except (TypeError, ValueError):
+                    pass
+
+            # ---------------------------------------------
+            # CONSUMO ACUMULADO
+            # ---------------------------------------------
+
+            if tipo_normalizado == "CONSACU":
+
+                valor_consumo = (
+                    fila[columna_mes - 1]
+                    if len(fila) >= columna_mes
+                    else None
+                )
+
+                if valor_consumo is not None:
+
+                    try:
+
+                        resultados[codigo]["consumo_acumulado"] = float(
+                            valor_consumo
+                        )
+
+                    except (TypeError, ValueError):
+                        pass
+
+                if unidad:
+                    resultados[codigo]["unidad"] = unidad
+
+        return (
+            resultados,
+            fecha_actualizacion.strftime("%d/%m/%Y")
+        )
+
+    finally:
+
+        libro.close()
+
+
+# =====================================================
+# 3.2 OBTENER DATOS DEL MATERIAL SELECCIONADO
+# =====================================================
+
+def obtener_datos_mrp_material(codigo_material):
+
+    """
+    Devuelve:
+    - Stock actual.
+    - Consumo acumulado.
+    - Unidad de medida.
+    - Fecha de actualización del MRP.
+    """
+
+    datos_mrp, fecha_mrp = cargar_datos_mrp()
+
+    codigo = str(codigo_material).strip()
+
+    if codigo.endswith(".0"):
+        codigo = codigo[:-2]
+
+    informacion = datos_mrp.get(codigo)
+
+    if informacion is None:
+
+        return None, None, None, fecha_mrp
+
+    return (
+        informacion.get("stock_actual"),
+        informacion.get("consumo_acumulado"),
+        informacion.get("unidad"),
+        fecha_mrp
+    )
+
+
+# =====================================================
 # 4. ACTUALIZACIÓN MANUAL
 # =====================================================
 
@@ -86,6 +346,8 @@ with col_actualizar:
     ):
 
         cargar_consumo.clear()
+        cargar_datos_mrp.clear()
+
         st.rerun()
 
 
@@ -98,7 +360,11 @@ try:
     datos_originales = cargar_consumo()
 
     if datos_originales.empty:
-        st.error("El archivo de consumo no contiene registros.")
+
+        st.error(
+            "El archivo de consumo no contiene registros."
+        )
+
         st.stop()
 
 except Exception as error:
@@ -230,6 +496,7 @@ else:
 # Limpiar unidad de medida
 
 if "Un.medida de entrada" not in datos.columns:
+
     datos["Un.medida de entrada"] = "Sin unidad"
 
 datos["Un.medida de entrada"] = (
@@ -260,7 +527,10 @@ catalogo["Descripción material"] = (
 
 if catalogo.empty:
 
-    st.warning("No existen materias primas para consultar.")
+    st.warning(
+        "No existen materias primas para consultar."
+    )
+
     st.stop()
 
 
@@ -336,7 +606,10 @@ if busqueda.strip():
 
 if catalogo_filtrado.empty:
 
-    st.warning("No se encontraron materias primas con esa búsqueda.")
+    st.warning(
+        "No se encontraron materias primas con esa búsqueda."
+    )
+
     st.stop()
 
 
@@ -371,7 +644,10 @@ datos_material = datos[
 
 if datos_material.empty:
 
-    st.info("No existen movimientos para esta materia prima.")
+    st.info(
+        "No existen movimientos para esta materia prima."
+    )
+
     st.stop()
 
 
@@ -418,7 +694,11 @@ if len(unidades) > 1:
 
 else:
 
-    unidad_seleccionada = unidades[0] if unidades else "Sin unidad"
+    unidad_seleccionada = (
+        unidades[0]
+        if unidades
+        else "Sin unidad"
+    )
 
 
 # =====================================================
@@ -460,32 +740,104 @@ consumo_mensual = consumo_mensual.sort_values("Fecha")
 # 14. INDICADORES DEL MATERIAL
 # =====================================================
 
-consumo_total = consumo_mensual["Consumo"].sum()
-
-consumo_promedio = (
-    consumo_mensual["Consumo"].mean()
-    if not consumo_mensual.empty
-    else 0
-)
+# Los dos primeros indicadores se obtienen directamente
+# de la hoja MRP del Excel:
+#
+# - Stock Actual: columna W de la fila principal.
+# - Consumo real a la fecha: fila Cons. Acu.
+#   en la columna correspondiente al mes de actualización.
+#
+# El tercer indicador se mantiene desde los movimientos SAP.
 
 cantidad_movimientos = len(datos_material)
 
+try:
+
+    (
+        stock_actual_mrp,
+        consumo_acumulado_mrp,
+        unidad_mrp,
+        fecha_mrp
+    ) = obtener_datos_mrp_material(codigo_seleccionado)
+
+except Exception as error:
+
+    stock_actual_mrp = None
+    consumo_acumulado_mrp = None
+    unidad_mrp = None
+    fecha_mrp = None
+
+    st.warning(
+        f"No fue posible obtener el stock y el consumo acumulado "
+        f"desde el MRP: {error}"
+    )
+
+
+unidad_mostrar = (
+    unidad_mrp
+    if unidad_mrp and unidad_mrp != "None"
+    else unidad_seleccionada
+)
+
 col1, col2, col3 = st.columns(3)
 
-col1.metric(
-    "Consumo acumulado",
-    f"{consumo_total:,.2f} {unidad_seleccionada}"
-)
 
-col2.metric(
-    "Consumo mensual promedio",
-    f"{consumo_promedio:,.2f} {unidad_seleccionada}"
-)
+# -----------------------------------------------------
+# PRIMERA TARJETA: STOCK ACTUAL
+# -----------------------------------------------------
+
+if stock_actual_mrp is not None:
+
+    col1.metric(
+        "Stock actual",
+        f"{stock_actual_mrp:,.2f} {unidad_mostrar}"
+    )
+
+else:
+
+    col1.metric(
+        "Stock actual",
+        "No disponible"
+    )
+
+
+# -----------------------------------------------------
+# SEGUNDA TARJETA: CONSUMO REAL A LA FECHA
+# -----------------------------------------------------
+
+if consumo_acumulado_mrp is not None:
+
+    col2.metric(
+        "Consumo real a la fecha",
+        f"{consumo_acumulado_mrp:,.2f} {unidad_mostrar}"
+    )
+
+else:
+
+    col2.metric(
+        "Consumo real a la fecha",
+        "No disponible"
+    )
+
+
+# -----------------------------------------------------
+# TERCERA TARJETA: MOVIMIENTOS SAP
+# -----------------------------------------------------
 
 col3.metric(
     "Movimientos SAP",
     f"{cantidad_movimientos:,}"
 )
+
+
+if fecha_mrp:
+
+    st.caption(
+        f"Stock y consumo acumulado obtenidos del MRP "
+        f"actualizado al {fecha_mrp}. El consumo corresponde "
+        f"al valor de la fila 'Cons. Acu.' en el mes de actualización."
+    )
+
 
 st.divider()
 
@@ -536,7 +888,12 @@ if not consumo_mensual.empty:
         height=430,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        margin=dict(t=25, b=30, l=20, r=20),
+        margin=dict(
+            t=25,
+            b=30,
+            l=20,
+            r=20
+        ),
         xaxis=dict(
             tickformat="%b %Y",
             title="Mes",
@@ -556,7 +913,9 @@ if not consumo_mensual.empty:
 
 else:
 
-    st.info("No existen datos para construir el gráfico.")
+    st.info(
+        "No existen datos para construir el gráfico."
+    )
 
 
 st.divider()
@@ -647,7 +1006,9 @@ if len(consumo_mensual) >= 1:
         .copy()
     )
 
-    promedio_proyeccion = ultimos_tres["Consumo"].mean()
+    promedio_proyeccion = (
+        ultimos_tres["Consumo"].mean()
+    )
 
     ultimo_mes = consumo_mensual["Mes"].max()
 
@@ -677,7 +1038,10 @@ if len(consumo_mensual) >= 1:
     })
 
     proyeccion = pd.concat(
-        [proyeccion, datos_futuros],
+        [
+            proyeccion,
+            datos_futuros
+        ],
         ignore_index=True
     )
 
@@ -730,7 +1094,12 @@ if len(consumo_mensual) >= 1:
         height=450,
         paper_bgcolor="white",
         plot_bgcolor="white",
-        margin=dict(t=25, b=30, l=20, r=20),
+        margin=dict(
+            t=25,
+            b=30,
+            l=20,
+            r=20
+        ),
         xaxis=dict(
             tickformat="%b %Y",
             title="Mes",
@@ -786,4 +1155,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
