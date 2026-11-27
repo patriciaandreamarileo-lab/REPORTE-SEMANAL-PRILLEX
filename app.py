@@ -5,7 +5,7 @@ from modules.navegacion import configurar_navegacion
 
 
 st.set_page_config(
-    page_title="Dashboard de Gestión | PRILLEX",
+    page_title="Dashboard de Gestión | PUNTA TEATINOS",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -48,4 +48,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 configurar_navegacion()
+
