@@ -1,3 +1,4 @@
+
 import base64
 import requests
 import streamlit as st
@@ -21,7 +22,6 @@ def _secret(nombre, default=None):
 
 def _config():
     """Obtiene la configuración de GitHub."""
-
     return {
         "token": _secret("GITHUB_TOKEN"),
         "repo": _secret("GITHUB_REPO"),
@@ -30,8 +30,7 @@ def _config():
 
 
 def gh_disponible():
-    """Comprueba si están configuradas las credenciales de GitHub."""
-
+    """Comprueba si están configuradas las credenciales."""
     config = _config()
 
     return all([
@@ -42,8 +41,7 @@ def gh_disponible():
 
 
 def _headers():
-    """Encabezados para comunicarse con GitHub."""
-
+    """Encabezados para solicitudes JSON a GitHub."""
     config = _config()
 
     return {
@@ -53,9 +51,19 @@ def _headers():
     }
 
 
-def limpiar_ruta(ruta):
-    """Normaliza las rutas de archivos dentro del repositorio."""
+def _headers_raw():
+    """Encabezados para descargar archivos binarios."""
+    config = _config()
 
+    return {
+        "Authorization": f"Bearer {config['token']}",
+        "Accept": "application/vnd.github.raw",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION
+    }
+
+
+def limpiar_ruta(ruta):
+    """Normaliza las rutas de archivos."""
     return str(ruta).replace("\\", "/").strip("/")
 
 
@@ -64,14 +72,10 @@ def limpiar_ruta(ruta):
 # =========================================================
 
 def gh_password_configurada():
-    """Comprueba si existe una contraseña de administración."""
-
     return bool(_secret("CLAVE_SUBIDA"))
 
 
 def gh_password_ok(clave):
-    """Valida la contraseña ingresada."""
-
     clave_correcta = _secret("CLAVE_SUBIDA")
 
     if not clave_correcta:
@@ -161,7 +165,12 @@ def _sha_de(ruta):
 
 
 def gh_leer(ruta):
-    """Descarga el contenido de un archivo desde GitHub."""
+    """
+    Descarga un archivo desde GitHub en formato binario.
+
+    Funciona con Excel, XLSM y otros archivos.
+    No depende de que GitHub entregue el contenido en Base64.
+    """
 
     if not gh_disponible():
         raise RuntimeError(
@@ -172,9 +181,9 @@ def gh_leer(ruta):
 
     respuesta = requests.get(
         _url_contenido(ruta),
-        headers=_headers(),
+        headers=_headers_raw(),
         params={"ref": config["branch"]},
-        timeout=60
+        timeout=120
     )
 
     if respuesta.status_code == 404:
@@ -182,16 +191,35 @@ def gh_leer(ruta):
 
     respuesta.raise_for_status()
 
-    datos = respuesta.json()
+    # Si GitHub entrega el archivo directamente,
+    # devolvemos sus bytes originales.
+    contenido = respuesta.content
 
-    if datos.get("encoding") != "base64":
+    if not contenido:
         raise ValueError(
-            "GitHub no devolvió el archivo en formato Base64."
+            f"GitHub devolvió un archivo vacío: {ruta}"
         )
 
-    contenido = base64.b64decode(
-        datos["content"].replace("\n", "")
-    )
+    # Compatibilidad: si GitHub devuelve JSON
+    # en lugar del contenido binario.
+    tipo = respuesta.headers.get(
+        "Content-Type", ""
+    ).lower()
+
+    if "application/json" in tipo:
+
+        datos = respuesta.json()
+
+        if datos.get("encoding") == "base64":
+
+            return base64.b64decode(
+                datos["content"].replace("\n", "")
+            )
+
+        raise ValueError(
+            "GitHub respondió en JSON, pero no entregó "
+            "el contenido del archivo."
+        )
 
     return contenido
 
@@ -250,7 +278,7 @@ def _put(ruta, contenido, mensaje, sha=None):
         _url_contenido(ruta),
         headers=_headers(),
         json=datos,
-        timeout=90
+        timeout=120
     )
 
     respuesta.raise_for_status()
@@ -267,7 +295,7 @@ def gh_guardar(
     """
     Guarda un archivo en GitHub.
 
-    sub: carpeta de destino, por ejemplo 'data'.
+    sub: carpeta de destino.
     nombre: nombre del archivo.
     contenido: bytes del archivo.
     reemplazar: permite actualizar un archivo existente.
@@ -349,4 +377,3 @@ def gh_eliminar(ruta):
     )
 
     return True
-
